@@ -1,128 +1,200 @@
-import sys
-import polars as pl
-import polars.selectors as cs
-import holidays
-from sklearn.model_selection import train_test_split
-import os
-class Dataset():
-    def __init__(self):
-        self.IS_COLAB = ~os.path.isfile("/home/davidgauthier/Codes/Hackatons_2024/Enefit/data/train.csv")
-        self.IS_KAGGLE = "kaggle_secrets" in sys.modules
-        if self.IS_KAGGLE:
-            self.path = '/kaggle/input/predict-energy-behavior-of-prosumers'
-        else:
-            self.path = "/home/davidgauthier/Codes/Hackatons_2024/Enefit/data"
-
-    def load(self):
-        # Data
-        self.info      = pl.read_csv(self.path+'/train.csv', try_parse_dates=True).drop_nulls('target')
-        self.client    = pl.read_csv(self.path+'/client.csv', try_parse_dates=True)
-        self.e_price   = pl.read_csv(self.path+'/electricity_prices.csv', try_parse_dates=True)
-        self.g_price   = pl.read_csv(self.path+'/gas_prices.csv', try_parse_dates=True)
-        self.f_weather = pl.read_csv(self.path+'/forecast_weather.csv', try_parse_dates=True)
-        self.h_weather = pl.read_csv(self.path+'/historical_weather.csv', try_parse_dates=True)
-        
-        self.ws_county = pl.read_csv(self.path+'/weather_station_to_county_mapping.csv', try_parse_dates=True)
-        self.county_pos = self.ws_county.drop_nulls().sort('county_name')\
-                .group_by(pl.col('county')).agg(
-                        pl.col('longitude').map_elements(lambda x: [min(x),max(x)]),
-                        pl.col('latitude').map_elements(lambda x: [min(x),max(x)]))
-
-        # Splits
-        blocks                       = self.info['data_block_id'].unique().to_numpy()
-        self.train_id, self.test_id  = train_test_split(blocks, shuffle=False, test_size=0.3)
-
-    def time_features(self):
-        holidays_est = holidays.Estonia()
-        is_holidays  = pl.col('datetime').dt.strftime('%Y-%m-%d').is_in([x.strftime('%Y-%m-%d') for x in holidays_est.keys()]).cast(int)
-        train_info = train_info.with_columns(is_holidays=is_holidays, weekdays=pl.col('datetime').dt.weekday, months=pl.col('datetime').dt.month,)
-
-    def add_features(self):
-        pass
-
-    def pl_train_test_split(self,df):    
-        return df.filter(pl.col('data_block_id').is_in(self.train_id)),\
-                df.filter(pl.col('data_block_id').is_in(self.valid_id)),\
-                 df.filter(pl.col('data_block_id').is_in(self.test_id))
-    
-    def meta_(self):
-        self.info.select(~cs.matches('.*_id')).describe()
-
-
-    def get_county_from_map(self, lat, lon, county_pos) -> pl.Expr:
-        return pl.when(pl.col('latitude').is_between(*lat) & pl.col('longitude').is_between(*lon)).then(county_pos).otherwise(-1).alias('county_in_'+str(county_pos))
-
-    def loc_county(self, weather):
-        '''Find Estonian county based on coordinates'''
-        return weather.with_columns(weather.with_columns([self.get_county_from_map(lat, lon, county) for county, lon, lat in self.county_pos.iter_rows()]).select(cs.matches('county_in_\d*')).max_horizontal().alias('county').cast(pl.Int64)).filter(~(pl.col('county')==-1))
-
-    def fill_weather(self, weather): 
-        return pl.concat((weather,weather.filter(pl.col('county')==10).with_columns(county=pl.lit(1,dtype=pl.Int64)),weather.filter(pl.col('county')==11).with_columns(county=pl.lit(8,dtype=pl.Int64))))
-
-    def merge_set(self):
-
-        # Capacity production (prices)
-        production = self.info
-
-        # Add County and fill missing with closest region
-        h_weather = self.loc_county(self.h_weather)
-        h_weather = self.fill_weather(h_weather)
-
-        f_weather = self.loc_county(self.f_weather)
-        f_weather = self.fill_weather(f_weather)
-
-        # Merge production data and weather data
-        production = self.production_meteo_(f_weather,production)
-
-        # FB Fill for missing weather forecasts
-        production = self.fill_missings(production)
-
-        return production
-
-    def production_meteo_(self, f_weather,production):
-        # Subset Weather
-        f_weather = f_weather.filter(pl.col('hours_ahead').is_between(0,25)).sort(['county','forecast_datetime'])
-        # Average across counties !MEAN!
-        f_weather = f_weather.group_by(['forecast_datetime','county']).mean()
-        # Name compatibilty
-        f_weather = f_weather.rename({'forecast_datetime':'datetime'})
-        # Merge production + weather forecasts
-        return production.join(f_weather, how='left', on=['county','datetime'])
-
-    def fill_missings(self, production_meteo):
-        # Take last meteo forecast
-        production_meteo = production_meteo.group_by('county').map_groups(lambda x: x.with_columns(pl.all().forward_fill()).with_columns(pl.all().backward_fill()))
-        return production_meteo
-    
-    def update_data(self,df_new_client,df_new_gas_prices,df_new_electricity_prices,df_new_forecast_weather,df_new_historical_weather,df_new_target):
-
-        df_new_client = pl.from_pandas(
-            df_new_client[self.client.drop(columns=['data_block_id']).columns], schema_overrides=self.client.schema
-        )
-        df_new_gas_prices = pl.from_pandas(
-            df_new_gas_prices[self.g_price.drop(columns=['data_block_id']).columns], schema_overrides=self.g_price.schema
-        )
-        df_new_electricity_prices = pl.from_pandas(
-            df_new_electricity_prices[self.e_price.drop(columns=['data_block_id']).columns], schema_overrides=self.e_price.schema
-        )
-        df_new_forecast_weather = pl.from_pandas(
-            df_new_forecast_weather[self.f_weather.drop(columns=['data_block_id']).columns], schema_overrides=self.f_weather.schema
-        )
-        df_new_historical_weather = pl.from_pandas(
-            df_new_historical_weather[self.h_weather.drop(columns=['data_block_id']).columns], schema_overrides=self.h_weather.schema
-        )
-        df_new_target = pl.from_pandas(
-            df_new_target[self.info.drop(columns=['data_block_id']).columns], schema_overrides=self.info.schema
-        )
-
-        self.client    = pl.concat((self.client.drop(columns=['data_block_id']),df_new_client))
-        self.g_price   = pl.concat((self.g_price.drop(columns=['data_block_id']),df_new_gas_prices))
-        self.e_price   = pl.concat((self.e_price.drop(columns=['data_block_id']),df_new_electricity_prices))
-        self.f_weather = pl.concat((self.f_weather.drop(columns=['data_block_id']),df_new_forecast_weather))
-        self.h_weather = pl.concat((self.h_weather.drop(columns=['data_block_id']),df_new_historical_weather))
-        self.info      = pl.concat((self.info.drop(columns=['data_block_id']),df_new_target))
-
-
-
-
-#     def cons
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "443d10a0",
+   "metadata": {
+    "_cell_guid": "b1076dfc-b9ad-4769-8c92-a6c4dae69d19",
+    "_uuid": "8f2839f25d086af736a60e9eeb907d3b93b6e0e5",
+    "execution": {
+     "iopub.execute_input": "2024-01-10T08:58:32.612158Z",
+     "iopub.status.busy": "2024-01-10T08:58:32.611696Z",
+     "iopub.status.idle": "2024-01-10T08:58:34.672351Z",
+     "shell.execute_reply": "2024-01-10T08:58:34.671000Z"
+    },
+    "papermill": {
+     "duration": 2.068028,
+     "end_time": "2024-01-10T08:58:34.675350",
+     "exception": false,
+     "start_time": "2024-01-10T08:58:32.607322",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "import sys\n",
+    "import polars as pl\n",
+    "import polars.selectors as cs\n",
+    "import holidays\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "import os\n",
+    "class Dataset():\n",
+    "    def __init__(self):\n",
+    "        self.IS_COLAB = ~os.path.isfile(\"/home/davidgauthier/Codes/Hackatons_2024/Enefit/data/train.csv\")\n",
+    "        self.IS_KAGGLE = \"kaggle_secrets\" in sys.modules\n",
+    "        if self.IS_KAGGLE:\n",
+    "            self.path = '/kaggle/input/predict-energy-behavior-of-prosumers'\n",
+    "        else:\n",
+    "            self.path = \"/home/davidgauthier/Codes/Hackatons_2024/Enefit/data\"\n",
+    "\n",
+    "    def load(self):\n",
+    "        # Data\n",
+    "        self.info      = pl.read_csv(self.path+'/train.csv', try_parse_dates=True).drop_nulls('target')\n",
+    "        self.client    = pl.read_csv(self.path+'/client.csv', try_parse_dates=True)\n",
+    "        self.e_price   = pl.read_csv(self.path+'/electricity_prices.csv', try_parse_dates=True)\n",
+    "        self.g_price   = pl.read_csv(self.path+'/gas_prices.csv', try_parse_dates=True)\n",
+    "        self.f_weather = pl.read_csv(self.path+'/forecast_weather.csv', try_parse_dates=True)\n",
+    "        self.h_weather = pl.read_csv(self.path+'/historical_weather.csv', try_parse_dates=True)\n",
+    "        \n",
+    "        self.ws_county = pl.read_csv(self.path+'/weather_station_to_county_mapping.csv', try_parse_dates=True)\n",
+    "        self.county_pos = self.ws_county.drop_nulls().sort('county_name')\\\n",
+    "                .group_by(pl.col('county')).agg(\n",
+    "                        pl.col('longitude').map_elements(lambda x: [min(x),max(x)]),\n",
+    "                        pl.col('latitude').map_elements(lambda x: [min(x),max(x)]))\n",
+    "\n",
+    "        # Splits\n",
+    "        blocks                       = self.info['data_block_id'].unique().to_numpy()\n",
+    "        self.train_id, self.test_id  = train_test_split(blocks, shuffle=False, test_size=0.3)\n",
+    "\n",
+    "    def time_features(self):\n",
+    "        holidays_est = holidays.Estonia()\n",
+    "        is_holidays  = pl.col('datetime').dt.strftime('%Y-%m-%d').is_in([x.strftime('%Y-%m-%d') for x in holidays_est.keys()]).cast(int)\n",
+    "        train_info = train_info.with_columns(is_holidays=is_holidays, weekdays=pl.col('datetime').dt.weekday, months=pl.col('datetime').dt.month,)\n",
+    "\n",
+    "    def add_features(self):\n",
+    "        pass\n",
+    "\n",
+    "    def pl_train_test_split(self,df):    \n",
+    "        return df.filter(pl.col('data_block_id').is_in(self.train_id)),\\\n",
+    "                df.filter(pl.col('data_block_id').is_in(self.valid_id)),\\\n",
+    "                 df.filter(pl.col('data_block_id').is_in(self.test_id))\n",
+    "    \n",
+    "    def meta_(self):\n",
+    "        self.info.select(~cs.matches('.*_id')).describe()\n",
+    "\n",
+    "\n",
+    "    def get_county_from_map(self, lat, lon, county_pos) -> pl.Expr:\n",
+    "        return pl.when(pl.col('latitude').is_between(*lat) & pl.col('longitude').is_between(*lon)).then(county_pos).otherwise(-1).alias('county_in_'+str(county_pos))\n",
+    "\n",
+    "    def loc_county(self, weather):\n",
+    "        '''Find Estonian county based on coordinates'''\n",
+    "        return weather.with_columns(weather.with_columns([self.get_county_from_map(lat, lon, county) for county, lon, lat in self.county_pos.iter_rows()]).select(cs.matches('county_in_\\d*')).max_horizontal().alias('county').cast(pl.Int64)).filter(~(pl.col('county')==-1))\n",
+    "\n",
+    "    def fill_weather(self, weather): \n",
+    "        return pl.concat((weather,weather.filter(pl.col('county')==10).with_columns(county=pl.lit(1,dtype=pl.Int64)),weather.filter(pl.col('county')==11).with_columns(county=pl.lit(8,dtype=pl.Int64))))\n",
+    "\n",
+    "    def merge_set(self):\n",
+    "\n",
+    "        # Capacity production (prices)\n",
+    "        production = self.info\n",
+    "\n",
+    "        # Add County and fill missing with closest region\n",
+    "        h_weather = self.loc_county(self.h_weather)\n",
+    "        h_weather = self.fill_weather(h_weather)\n",
+    "\n",
+    "        f_weather = self.loc_county(self.f_weather)\n",
+    "        f_weather = self.fill_weather(f_weather)\n",
+    "\n",
+    "        # Merge production data and weather data\n",
+    "        production = self.production_meteo_(f_weather,production)\n",
+    "\n",
+    "        # FB Fill for missing weather forecasts\n",
+    "        production = self.fill_missings(production)\n",
+    "\n",
+    "        return production\n",
+    "\n",
+    "    def production_meteo_(self, f_weather,production):\n",
+    "        # Subset Weather\n",
+    "        f_weather = f_weather.filter(pl.col('hours_ahead').is_between(0,25)).sort(['county','forecast_datetime'])\n",
+    "        # Average across counties !MEAN!\n",
+    "        f_weather = f_weather.group_by(['forecast_datetime','county']).mean()\n",
+    "        # Name compatibilty\n",
+    "        f_weather = f_weather.rename({'forecast_datetime':'datetime'})\n",
+    "        # Merge production + weather forecasts\n",
+    "        return production.join(f_weather, how='left', on=['county','datetime'])\n",
+    "\n",
+    "    def fill_missings(self, production_meteo):\n",
+    "        # Take last meteo forecast\n",
+    "        production_meteo = production_meteo.group_by('county').map_groups(lambda x: x.with_columns(pl.all().forward_fill()).with_columns(pl.all().backward_fill()))\n",
+    "        return production_meteo\n",
+    "    \n",
+    "    def update_data(self,df_new_client,df_new_gas_prices,df_new_electricity_prices,df_new_forecast_weather,df_new_historical_weather,df_new_target):\n",
+    "\n",
+    "        df_new_client = pl.from_pandas(\n",
+    "            df_new_client[self.client.drop(columns=['data_block_id']).columns], schema_overrides=self.client.schema\n",
+    "        )\n",
+    "        df_new_gas_prices = pl.from_pandas(\n",
+    "            df_new_gas_prices[self.g_price.drop(columns=['data_block_id']).columns], schema_overrides=self.g_price.schema\n",
+    "        )\n",
+    "        df_new_electricity_prices = pl.from_pandas(\n",
+    "            df_new_electricity_prices[self.e_price.drop(columns=['data_block_id']).columns], schema_overrides=self.e_price.schema\n",
+    "        )\n",
+    "        df_new_forecast_weather = pl.from_pandas(\n",
+    "            df_new_forecast_weather[self.f_weather.drop(columns=['data_block_id']).columns], schema_overrides=self.f_weather.schema\n",
+    "        )\n",
+    "        df_new_historical_weather = pl.from_pandas(\n",
+    "            df_new_historical_weather[self.h_weather.drop(columns=['data_block_id']).columns], schema_overrides=self.h_weather.schema\n",
+    "        )\n",
+    "        df_new_target = pl.from_pandas(\n",
+    "            df_new_target[self.info.drop(columns=['data_block_id']).columns], schema_overrides=self.info.schema\n",
+    "        )\n",
+    "\n",
+    "        self.client    = pl.concat((self.client.drop(columns=['data_block_id']),df_new_client))\n",
+    "        self.g_price   = pl.concat((self.g_price.drop(columns=['data_block_id']),df_new_gas_prices))\n",
+    "        self.e_price   = pl.concat((self.e_price.drop(columns=['data_block_id']),df_new_electricity_prices))\n",
+    "        self.f_weather = pl.concat((self.f_weather.drop(columns=['data_block_id']),df_new_forecast_weather))\n",
+    "        self.h_weather = pl.concat((self.h_weather.drop(columns=['data_block_id']),df_new_historical_weather))\n",
+    "        self.info      = pl.concat((self.info.drop(columns=['data_block_id']),df_new_target))\n",
+    "\n",
+    "\n",
+    "\n",
+    "\n",
+    "#     def cons"
+   ]
+  }
+ ],
+ "metadata": {
+  "kaggle": {
+   "accelerator": "none",
+   "dataSources": [],
+   "dockerImageVersionId": 30626,
+   "isGpuEnabled": false,
+   "isInternetEnabled": false,
+   "language": "python",
+   "sourceType": "notebook"
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.10.12"
+  },
+  "papermill": {
+   "default_parameters": {},
+   "duration": 6.261827,
+   "end_time": "2024-01-10T08:58:35.299859",
+   "environment_variables": {},
+   "exception": null,
+   "input_path": "__notebook__.ipynb",
+   "output_path": "__notebook__.ipynb",
+   "parameters": {},
+   "start_time": "2024-01-10T08:58:29.038032",
+   "version": "2.4.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
