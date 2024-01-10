@@ -9,7 +9,7 @@ class Dataset():
     def __init__(self):
         self.IS_COLAB = ~os.path.isfile("/home/davidgauthier/Codes/Hackatons_2024/Enefit/data/train.csv")
         self.IS_KAGGLE = "kaggle_secrets" in sys.modules
-        if self.IS_KAGGLE:
+        if self.IS_COLAB:
             self.path = '/kaggle/input/predict-energy-behavior-of-prosumers'
         else:
             self.path = "/home/davidgauthier/Codes/Hackatons_2024/Enefit/data"
