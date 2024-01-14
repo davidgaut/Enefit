@@ -36,6 +36,29 @@ g_prices  = dataset.g_price
 h_weather = dataset.h_weather
 f_weather = dataset.f_weather
 
+
+info.filter(pl.col('data_block_id')==100)['datetime'].unique()
+
+h_weather.filter(pl.col('data_block_id')==100)['datetime'].unique()
+
+f_weather.filter(pl.col('data_block_id')==100,pl.col('forecast_datetime')==datetime(2021,12,10, 1))
+
+f_weather.filter(pl.col('data_block_id')==100)[['origin_datetime','forecast_datetime']].unique().sort('forecast_datetime')
+
+f_weather.filter(pl.col('data_block_id')==100,pl.col('forecast_datetime')==datetime(2021,12,10, 1))[['origin_datetime','forecast_datetime','hours_ahead']].unique().sort('forecast_datetime')
+
+e_prices.filter(pl.col('data_block_id')==100)['forecast_date']
+
+# %%
+from datetime import datetime
+f_weather.filter(pl.col('latitude')==57.6,pl.col('longitude')==21.7,pl.col('origin_datetime')==datetime(2021,9,1, 2)).sort('hours_ahead')
+
+f_weather.filter(pl.col('latitude')==57.6,pl.col('longitude')==21.7,pl.col('forecast_datetime')==datetime(2022,4,1, 10)).sort('hours_ahead')
+
+h_weather.filter(pl.col('latitude')==57.6,pl.col('longitude')==21.7,pl.col('datetime')==datetime(2022,4,1, 10))
+
+
+
 # %%
 # Target Distribution by Types
 df = info.with_columns(
