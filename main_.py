@@ -29,6 +29,7 @@ from functions import Dataset
 # [ ] County for weather?
 # Contract type and energy prices
 # Add frequencies
+# Add Holidays
 # Linear Trees
 # Hyperparams (production / consumption)
 
@@ -50,7 +51,7 @@ features_prod = sets_.select( ~cs.matches('.*(datetime|_id|latitude|longitude|is
 features_cons = sets_.select( ~cs.matches('.*(datetime|_id|latitude|longitude|is_consumption|hours_ahead|target).*')).columns
 
 #
-model_parameters = {"n_estimators": 500,"objective": "regression_l1","learning_rate": 0.05,"colsample_bytree": 0.89,"colsample_bynode": 0.596,"lambda_l1": 3.4895,"lambda_l2": 1.489,"max_depth": 15,"num_leaves": 490,"min_data_in_leaf": 48,'max_bin':840, 'force_col_wise':True, 'n_jobs':-1}
+model_parameters = {"n_estimators": 10,"objective": "regression_l1","learning_rate": 0.05,"colsample_bytree": 0.89,"colsample_bynode": 0.596,"lambda_l1": 3.4895,"lambda_l2": 1.489,"max_depth": 15,"num_leaves": 490,"min_data_in_leaf": 48,'max_bin':840, 'force_col_wise':True, 'n_jobs':-1}
 
 class Model(BaseEstimator,RegressorMixin):
     def __init__(self, n_estimators=100, objective='regression_l1',path_smooth=0.0,learning_rate=0.1,colsample_bytree=1,colsample_bynode=0.5,lambda_l1=0.0,lambda_l2=0.0,max_depth=-1,num_leaves=31,min_data_in_leaf=20,max_bin=100,force_col_wise=True, features_pred_prod=None, features_pred_cons=None, n_model=3,n_jobs=-1):
@@ -158,7 +159,7 @@ print(np.mean(scores))
 
 # %%
 
-if False:
+if True:
     def tune_lgbm_model(X_train, y_train, random_state, n_iter=5, cv=3):
         param_dist = {
             'path_smooth': sp_uniform(0.01, 0.09),
@@ -170,7 +171,7 @@ if False:
             'min_data_in_leaf': sp_randint(30, 250),
             'max_depth': sp_randint(1, 29),
             'learning_rate': sp_uniform(0.001, 0.09),
-            'objective': 'regression_l1',#['regression', 'regression_l1', 'huber', 'fair', 'poisson', 'quantile', 'mape', 'gamma', 'tweedie']
+            'objective': ['regression_l1'],#['regression', 'regression_l1', 'huber', 'fair', 'poisson', 'quantile', 'mape', 'gamma', 'tweedie']
         }
 
         lgb_reg = lgb.LGBMRegressor(num_iterations=1,verbose=-1)

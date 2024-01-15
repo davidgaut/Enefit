@@ -116,7 +116,11 @@ class Dataset():
                 (pl.col('year') * 2 * np.pi / 366).cos().alias('cos(year)'),
             )\
             .with_columns(pl.concat_str('county','is_business','product_type','is_consumption',separator='_').alias('segment'))\
-        
+                
+        # Holidays
+
+
+
         info  = info.unique()
         dates = info[['date','datetime']]
         info = info.drop(columns=['date','datetime']).drop_nulls('target')
