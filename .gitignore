@@ -1,3 +1,4 @@
-!/data/loc_stations_corr.csv
-!/data/loc_stations.csv
-/data
+data/*
+!data/loc_stations_corr.csv
+!data/loc_stations.csv
+
