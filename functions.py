@@ -13,7 +13,7 @@ class Dataset():
         self.IS_KAGGLE = not os.path.isfile("/home/davidgauthier/Codes/Hackatons_2024/Enefit/data/train.csv")
         if self.IS_KAGGLE:
             self.path = '/kaggle/input/predict-energy-behavior-of-prosumers'
-            self.resources = '/kaggle/working/Enefit/data/'
+            self.resources = '/kaggle/working/Enefit/data'
         else:
             self.path = "/home/davidgauthier/Codes/Hackatons_2024/Enefit/data"
             self.resources = self.path
