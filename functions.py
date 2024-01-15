@@ -13,8 +13,10 @@ class Dataset():
         self.IS_KAGGLE = not os.path.isfile("/home/davidgauthier/Codes/Hackatons_2024/Enefit/data/train.csv")
         if self.IS_KAGGLE:
             self.path = '/kaggle/input/predict-energy-behavior-of-prosumers'
+            self.resources = '/kaggle/working/Enefit/data/'
         else:
             self.path = "/home/davidgauthier/Codes/Hackatons_2024/Enefit/data"
+            self.resources = self.path
 
     def load(self):
         # Data
@@ -24,8 +26,8 @@ class Dataset():
         self.g_price   = pl.read_csv(self.path+'/gas_prices.csv', try_parse_dates=True)
         self.f_weather = pl.read_csv(self.path+'/forecast_weather.csv', try_parse_dates=True)
         self.h_weather = pl.read_csv(self.path+'/historical_weather.csv', try_parse_dates=True)
-        self.loc_stats = pl.read_csv(self.path+'/loc_stations.csv').with_columns(pl.col('county').cast(pl.Int64))
-        self.loc_stats_micro = pl.read_csv(self.path+'/loc_stations_corr.csv')
+        self.loc_stats = pl.read_csv(self.resources+'/loc_stations.csv').with_columns(pl.col('county').cast(pl.Int64))
+        self.loc_stats_micro = pl.read_csv(self.resources+'/loc_stations_corr.csv')
         self.ws_county = pl.read_csv(self.path+'/weather_station_to_county_mapping.csv', try_parse_dates=True)
         self.county_pos = self.ws_county.drop_nulls().sort('county_name')\
                 .group_by(pl.col('county')).agg(
