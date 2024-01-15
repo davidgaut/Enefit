@@ -13,8 +13,8 @@ import geopandas as gpd
 from shapely.geometry import Point, LineString, Polygon, MultiPolygon
 import contextily as ctx
 
-forecast_weather_df = pd.read_csv('./data/forecast_weather.csv')#[['longitude','latitude']]
-ws_county = pd.read_csv('./data/weather_station_to_county_mapping.csv')#.drop(columns=['county_name'])
+forecast_weather_df = pd.read_csv('./data/forecast_weather.csv')
+ws_county = pd.read_csv('./data/weather_station_to_county_mapping.csv')
 unique_coords_forecast = np.unique(forecast_weather_df[["latitude", "longitude"]], axis=0)
 
 
@@ -238,3 +238,79 @@ ctx.add_basemap(ax, crs=gdf.crs.to_string(), source=ctx.providers.OpenStreetMap.
 ax.set_aspect('equal')
 ax.set_title('Counties land location points')
 plt.legend(loc='upper left', bbox_to_anchor=(1.02, 1))
+
+
+# %%
+# Segment and locations
+info = pl.read_csv("/home/davidgauthier/Codes/Hackatons_2024/Enefit/data"+'/train.csv', try_parse_dates=True)
+
+info = info.filter(pl.col('is_consumption')==0).with_columns(segment=pl.concat_str('county','is_business','product_type',separator='_'))
+
+h_weather = pl.read_csv("/home/davidgauthier/Codes/Hackatons_2024/Enefit/data"+'/historical_weather.csv', try_parse_dates=True)
+
+h_weather = h_weather.join(h_weather[['latitude','longitude']].unique().with_row_count('location'),how='left',on=['latitude','longitude'])
+
+segments = info['segment'].unique().to_numpy()
+seg_corrs = list()
+locs = h_weather['location'].unique().to_numpy()
+target = ['direct_solar_radiation',]
+for segment in segments:
+    ii = info.filter(pl.col('segment')==segment).join(h_weather[['datetime','location']+target],how='left',on=['datetime']).drop_nulls()
+    dict_corr = list()
+    for loc in locs:
+        corr = ii.filter(pl.col('location')==loc)[target+['target']].corr()[0,1]
+        dict_corr.append((loc,corr))
+    seg_corrs.append((segment,dict_corr))
+
+seg_corrs = dict(seg_corrs)
+corr_frame = pl.concat([pl.DataFrame(seg_corrs[seg]).rename({'column_0':'loc','column_1':seg}) for seg in segments],how='align').with_columns(pl.col('loc').cast(pl.Int16))
+
+corr_frame = corr_frame[sorted(corr_frame.columns)].drop(columns=['loc'])
+print(corr_frame.with_columns(pl.all().arg_max())[0])
+
+loc_coor = corr_frame.with_columns(pl.all().arg_max())[0].transpose(include_header=True).rename({'column_0':'location','column':'segment'}).join(h_weather[['location','latitude','longitude']],how='left',on='location').unique()
+loc_coor.write_csv('./data/loc_stations_corr.csv',)
+
+# %%
+fig, ax = plt.subplots(figsize=(13, 12))
+gdf.plot(ax=ax, edgecolor='blue', facecolor='none', linewidth=1)
+ff = forecast_weather_df.merge(h_weather[['latitude','longitude','location']].unique().to_pandas(),how='left',on=['latitude','longitude'])[['latitude','longitude','location',]].drop_duplicates()
+sns.scatterplot(data=ff, x='longitude', y='latitude', )
+for line in range(0,ff.shape[0]):
+     plt.text(ff.longitude[line]+0.05, ff.latitude[line], ff.location[line], horizontalalignment='left', size='medium', color='black', weight='semibold')
+
+ctx.add_basemap(ax, crs=gdf.crs.to_string(), source=ctx.providers.OpenStreetMap.Mapnik)
+ax.set_aspect('equal')
+ax.set_title('Counties land location points')
+plt.legend(loc='upper left', bbox_to_anchor=(1.02, 1))
+
+# %%
+info = pl.read_csv("/home/davidgauthier/Codes/Hackatons_2024/Enefit/data"+'/train.csv', try_parse_dates=True)
+
+info = info.filter(pl.col('is_consumption')==1).with_columns(segment=pl.concat_str('county','is_business','product_type',separator='_'))
+
+h_weather = pl.read_csv("/home/davidgauthier/Codes/Hackatons_2024/Enefit/data"+'/historical_weather.csv', try_parse_dates=True)
+
+h_weather = h_weather.join(h_weather[['latitude','longitude']].unique().with_row_count('location'),how='left',on=['latitude','longitude'])
+
+segments = info['segment'].unique().to_numpy()
+seg_corrs = list()
+locs = h_weather['location'].unique().to_numpy()
+target = ['temperature',]
+['location']
+for segment in segments:
+    ii = info.filter(pl.col('segment')==segment).join(h_weather[['datetime','location']+target],how='left',on=['datetime']).drop_nulls()
+    dict_corr = list()
+    for loc in locs:
+        corr = ii.filter(pl.col('location')==loc)[target+['target']].corr()[0,1]
+        dict_corr.append((loc,corr))
+    seg_corrs.append((segment,dict_corr))
+
+seg_corrs = dict(seg_corrs)
+corr_frame = pl.concat([pl.DataFrame(seg_corrs[seg]).rename({'column_0':'loc','column_1':seg}) for seg in segments],how='align').with_columns(pl.col('loc').cast(pl.Int16))
+
+corr_frame = corr_frame[sorted(corr_frame.columns)]
+print(corr_frame.with_columns(pl.all().arg_max())[0])
+
+# %%
+# Study meteo and powr

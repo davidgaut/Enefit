@@ -18,13 +18,14 @@ class Dataset():
 
     def load(self):
         # Data
-        self.info      = pl.read_csv(self.path+'/train.csv', try_parse_dates=True).drop_nulls('target')
+        self.info      = pl.read_csv(self.path+'/train.csv', try_parse_dates=True)
         self.client    = pl.read_csv(self.path+'/client.csv', try_parse_dates=True)
         self.e_price   = pl.read_csv(self.path+'/electricity_prices.csv', try_parse_dates=True)
         self.g_price   = pl.read_csv(self.path+'/gas_prices.csv', try_parse_dates=True)
         self.f_weather = pl.read_csv(self.path+'/forecast_weather.csv', try_parse_dates=True)
         self.h_weather = pl.read_csv(self.path+'/historical_weather.csv', try_parse_dates=True)
         self.loc_stats = pl.read_csv(self.path+'/loc_stations.csv').with_columns(pl.col('county').cast(pl.Int64))
+        self.loc_stats_micro = pl.read_csv(self.path+'/loc_stations_corr.csv')
         self.ws_county = pl.read_csv(self.path+'/weather_station_to_county_mapping.csv', try_parse_dates=True)
         self.county_pos = self.ws_county.drop_nulls().sort('county_name')\
                 .group_by(pl.col('county')).agg(
@@ -36,7 +37,7 @@ class Dataset():
         self.train_id, self.test_id  = train_test_split(self.blocks, shuffle=False, test_size=0.3)
 
 
-    def make_features(self,info,client,g_price,e_price,f_weather,h_weather,loc_stats):
+    def make_features(self,info,client,g_price,e_price,f_weather,h_weather,loc_stats,loc_stats_micro):
         to_drop = ['data_block_id','row_id','prediction_unit_id','county_name','origin_datetime','origin_date']
 
         info      = info.drop(columns=to_drop)
@@ -46,48 +47,60 @@ class Dataset():
         f_weather = f_weather.drop(columns=to_drop).rename({'forecast_datetime':'datetime'})
         h_weather = h_weather.drop(columns=to_drop)
         loc_stats = loc_stats.drop(columns=to_drop)
+        loc_stats_micro = loc_stats_micro.drop(columns=to_drop)
 
-        f_weather       = f_weather.filter(pl.col('hours_ahead')>=24).join(loc_stats,on=['latitude','longitude']).drop(columns=['latitude','longitude'])
-        h_weather       = h_weather.join(loc_stats,on=['latitude','longitude']).drop(columns=['latitude','longitude'])
-        f_weather_date  = f_weather.group_by(['datetime']).mean().drop(columns='county')
-        f_weather_local = f_weather.group_by(['datetime','county']).mean()
-        h_weather_date  = h_weather.group_by(['datetime']).mean().drop(columns='county')
-        h_weather_local = h_weather.group_by(['datetime','county']).mean()
+        f_weather       = f_weather.filter(pl.col('hours_ahead')>=24).join(loc_stats_micro,on=['latitude','longitude']).drop(columns=['latitude','longitude'])
+        h_weather       = h_weather.join(loc_stats_micro,on=['latitude','longitude']).drop(columns=['latitude','longitude'])
+        f_weather_date  = f_weather.group_by(['datetime']).mean().drop(columns='location')
+        f_weather_local = f_weather.group_by(['datetime','location']).mean()
+        h_weather_date  = h_weather.group_by(['datetime']).mean().drop(columns='location')
+        h_weather_local = h_weather.group_by(['datetime','location']).mean()
+
+        # Add
+        info = info.with_columns(location=info.with_columns(pl.concat_str('county','is_business','product_type',separator='_').alias('segment')).join(loc_stats_micro,how='left',on=['segment'])['location'])
 
         # Align client date
         client = client.with_columns((pl.col('date') + pl.duration(days=2)).cast(pl.Date))
 
-        target = info.select(pl.col(['target','product_type','datetime','county','is_business','is_consumption']),)
+        target = info.select(pl.col(['target','product_type','datetime','county','is_business','is_consumption','location']),)
+
         # Normalize by capacity
-        info = info.with_columns(target = target.with_columns(pl.col('datetime').cast(pl.Date).alias('date')).join(client,how='left',on=['date','is_business','county','product_type']).with_columns(pl.col('target')/pl.col('installed_capacity'))['target'])
+        original_target = info['target']
+        # info = info.with_columns(target = target.with_columns(pl.col('datetime').cast(pl.Date).alias('date')))
+        
+        info = info.with_columns(pl.col('datetime').cast(pl.Date).alias('date')).join(client, on=['product_type','county','is_business','date'] ,how='left')
+        info = info.with_columns(pl.col('target')/pl.col('installed_capacity'))
+        # info = info.drop(columns='target')
+        # info = info.with_columns(target = target.with_columns(pl.col('datetime').cast(pl.Date).alias('date')).join(client.unique(),how='left',on=['date','is_business','county','product_type']).with_columns(pl.col('target')/pl.col('installed_capacity'))['target'])
 
         #
-        target_sum_type = target.drop(columns='product_type').group_by(['datetime','county','is_consumption','is_business']).sum()
+        target_sum_type = target.drop(columns='product_type').group_by(['datetime','location','county','is_consumption','is_business']).sum()
 
+        join_target = ['location','product_type','datetime','county','is_business','is_consumption']
+        join_agg_target = ['location','datetime','county','is_business','is_consumption']
         info = info\
             .with_columns(pl.col('datetime').cast(pl.Date).alias('date'))\
-            .join(target.with_columns(pl.col('datetime') + pl.duration(days=2)) .rename({'target':'target_1'}),  on=['product_type','datetime','county','is_business','is_consumption'], how='left')\
-            .join(target.with_columns(pl.col('datetime') + pl.duration(days=3)) .rename({'target':'target_2'}),  on=['product_type','datetime','county','is_business','is_consumption'], how='left')\
-            .join(target.with_columns(pl.col('datetime') + pl.duration(days=4)) .rename({'target':'target_3'}),  on=['product_type','datetime','county','is_business','is_consumption'], how='left')\
-            .join(target.with_columns(pl.col('datetime') + pl.duration(days=5)) .rename({'target':'target_4'}),  on=['product_type','datetime','county','is_business','is_consumption'], how='left')\
-            .join(target.with_columns(pl.col('datetime') + pl.duration(days=6)) .rename({'target':'target_5'}),  on=['product_type','datetime','county','is_business','is_consumption'], how='left')\
-            .join(target.with_columns(pl.col('datetime') + pl.duration(days=7)) .rename({'target':'target_6'}),  on=['product_type','datetime','county','is_business','is_consumption'], how='left')\
-            .join(target.with_columns(pl.col('datetime') + pl.duration(days=14)).rename({'target':'target_7'}),  on=['product_type','datetime','county','is_business','is_consumption'],  how='left')\
-            .join(target_sum_type.with_columns(pl.col('datetime') + pl.duration(days=2)) .rename({'target':'target_1'}),  on=['datetime','county','is_business','is_consumption' ], suffix='_sum_contract', how='left')\
-            .join(target_sum_type.with_columns(pl.col('datetime') + pl.duration(days=3)) .rename({'target':'target_2'}),  on=['datetime','county','is_business','is_consumption' ], suffix='_sum_contract', how='left')\
-            .join(target_sum_type.with_columns(pl.col('datetime') + pl.duration(days=7)) .rename({'target':'target_6'}),  on=['datetime','county','is_business','is_consumption' ], suffix='_sum_contract', how='left')\
-            .join(client, on=['product_type','county','is_business','date']     ,how='left')\
+            .join(target.with_columns(pl.col('datetime') + pl.duration(days=2)) .rename({'target':'target_1'}),  on=join_target, how='left')\
+            .join(target.with_columns(pl.col('datetime') + pl.duration(days=3)) .rename({'target':'target_2'}),  on=join_target, how='left')\
+            .join(target.with_columns(pl.col('datetime') + pl.duration(days=4)) .rename({'target':'target_3'}),  on=join_target, how='left')\
+            .join(target.with_columns(pl.col('datetime') + pl.duration(days=5)) .rename({'target':'target_4'}),  on=join_target, how='left')\
+            .join(target.with_columns(pl.col('datetime') + pl.duration(days=6)) .rename({'target':'target_5'}),  on=join_target, how='left')\
+            .join(target.with_columns(pl.col('datetime') + pl.duration(days=7)) .rename({'target':'target_6'}),  on=join_target, how='left')\
+            .join(target.with_columns(pl.col('datetime') + pl.duration(days=14)).rename({'target':'target_7'}),  on=join_target,  how='left')\
+            .join(target_sum_type.with_columns(pl.col('datetime') + pl.duration(days=2)) .rename({'target':'target_1'}),  on=join_agg_target, suffix='_sum_contract', how='left')\
+            .join(target_sum_type.with_columns(pl.col('datetime') + pl.duration(days=3)) .rename({'target':'target_2'}),  on=join_agg_target, suffix='_sum_contract', how='left')\
+            .join(target_sum_type.with_columns(pl.col('datetime') + pl.duration(days=7)) .rename({'target':'target_6'}),  on=join_agg_target, suffix='_sum_contract', how='left')\
             .join(e_price.with_columns((pl.col('datetime') + pl.duration(days=1))), on=['datetime'],suffix='_e',how='left')\
             .join(g_price.with_columns((pl.col('date')     + pl.duration(days=1))), on=['date'],    suffix='_g',how='left')\
-            .join(f_weather_local,on=['datetime','county'], suffix='_f_l', how='left')\
+            .join(f_weather_local,on=['datetime','location'], suffix='_f_l', how='left')\
             .join(f_weather_date .with_columns(pl.col('datetime')+pl.duration(days=2)),on=['datetime'],         suffix='_f_d_2',how='left')\
             .join(h_weather_date .with_columns(pl.col('datetime')+pl.duration(days=2)),on=['datetime'],         suffix='_h_d_2',how='left')\
-            .join(f_weather_local.with_columns(pl.col('datetime')+pl.duration(days=2)),on=['datetime','county'],suffix='_f_l_2',  how='left')\
-            .join(h_weather_local.with_columns(pl.col('datetime')+pl.duration(days=2)),on=['datetime','county'],suffix='_h_l_2',  how='left')\
+            .join(f_weather_local.with_columns(pl.col('datetime')+pl.duration(days=2)),on=['datetime','location'],suffix='_f_l_2',  how='left')\
+            .join(h_weather_local.with_columns(pl.col('datetime')+pl.duration(days=2)),on=['datetime','location'],suffix='_h_l_2',  how='left')\
             .join(f_weather_date .with_columns(pl.col('datetime')+pl.duration(days=7)),on=['datetime'],         suffix='_f_d_7',how='left')\
             .join(h_weather_date .with_columns(pl.col('datetime')+pl.duration(days=7)),on=['datetime'],         suffix='_h_d_7',how='left')\
-            .join(f_weather_local.with_columns(pl.col('datetime')+pl.duration(days=7)),on=['datetime','county'],suffix='_f_l_7',  how='left')\
-            .join(h_weather_local.with_columns(pl.col('datetime')+pl.duration(days=7)),on=['datetime','county'],suffix='_h_l_7',  how='left')\
+            .join(f_weather_local.with_columns(pl.col('datetime')+pl.duration(days=7)),on=['datetime','location'],suffix='_f_l_7',  how='left')\
+            .join(h_weather_local.with_columns(pl.col('datetime')+pl.duration(days=7)),on=['datetime','location'],suffix='_h_l_7',  how='left')\
             .with_columns(
                 pl.col('datetime').dt.hour()       .alias('hour'),
                 pl.col('datetime').dt.day()        .alias('day'),
@@ -103,7 +116,8 @@ class Dataset():
                 (pl.col('year') * 2 * np.pi / 366).cos().alias('cos(year)'),
             )\
             .with_columns(pl.concat_str('county','is_business','product_type','is_consumption',separator='_').alias('segment'))\
-
+        
+        info  = info.unique()
         dates = info[['date','datetime']]
         info = info.drop(columns=['date','datetime']).drop_nulls('target')
         info = info.with_columns(target_mean = info[[f"target_{i}" for i in range(1, 7)]].mean_horizontal())\

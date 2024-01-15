@@ -38,8 +38,8 @@ dataset = Dataset()
 dataset.load()
 
 # Sets
-# info , client, g_price, e_price, f_weather, h_weather, _ ,loc_stats = dataset.info,dataset.client,dataset.g_price,dataset.e_price,dataset.f_weather,dataset.h_weather,dataset.ws_county, dataset.loc_stats
-sets_, dates = dataset.make_features(dataset.info,dataset.client,dataset.g_price,dataset.e_price,dataset.f_weather,dataset.h_weather, dataset.loc_stats)
+# info , client, g_price, e_price, f_weather, h_weather, _ ,loc_stats, loc_stats_micro = dataset.info,dataset.client,dataset.g_price,dataset.e_price,dataset.f_weather,dataset.h_weather,dataset.ws_county, dataset.loc_stats, dataset.loc_stats_micro
+sets_, dates = dataset.make_features(dataset.info,dataset.client,dataset.g_price,dataset.e_price,dataset.f_weather,dataset.h_weather, dataset.loc_stats,dataset.loc_stats_micro)
 
 # Missing
 sets_.with_columns(pl.all().is_null()).sum().transpose(include_header=True).filter(pl.col('column_0')!=0)
@@ -50,7 +50,7 @@ features_prod = sets_.select( ~cs.matches('.*(datetime|_id|latitude|longitude|is
 features_cons = sets_.select( ~cs.matches('.*(datetime|_id|latitude|longitude|is_consumption|hours_ahead|target).*')).columns
 
 #
-model_parameters = {"n_estimators": 200,"objective": "regression_l1","learning_rate": 0.05,"colsample_bytree": 0.89,"colsample_bynode": 0.596,"lambda_l1": 3.4895,"lambda_l2": 1.489,"max_depth": 15,"num_leaves": 490,"min_data_in_leaf": 48,'max_bin':840, 'force_col_wise':True, 'n_jobs':-1}
+model_parameters = {"n_estimators": 500,"objective": "regression_l1","learning_rate": 0.05,"colsample_bytree": 0.89,"colsample_bynode": 0.596,"lambda_l1": 3.4895,"lambda_l2": 1.489,"max_depth": 15,"num_leaves": 490,"min_data_in_leaf": 48,'max_bin':840, 'force_col_wise':True, 'n_jobs':-1}
 
 class Model(BaseEstimator,RegressorMixin):
     def __init__(self, n_estimators=100, objective='regression_l1',path_smooth=0.0,learning_rate=0.1,colsample_bytree=1,colsample_bynode=0.5,lambda_l1=0.0,lambda_l2=0.0,max_depth=-1,num_leaves=31,min_data_in_leaf=20,max_bin=100,force_col_wise=True, features_pred_prod=None, features_pred_cons=None, n_model=3,n_jobs=-1):
@@ -235,7 +235,7 @@ iter_test = env.iter_test()
 last_data_block_id = dataset.blocks.max()
 
 for data_block_id, (df_test, df_new_target, df_new_client, df_new_historical_weather,df_new_forecast_weather, df_new_electricity_prices, df_new_gas_prices, df_sample_prediction) in enumerate(iter_test):
-
+    
     dataset.update_data(
         data_block_id= 1 + data_block_id + last_data_block_id,
         df_new_client=df_new_client,
@@ -245,8 +245,8 @@ for data_block_id, (df_test, df_new_target, df_new_client, df_new_historical_wea
         df_new_historical_weather=df_new_historical_weather,
         df_new_target=df_new_target
     )
-    
-    df_test_features = dataset.make_features(dataset.info,dataset.client,dataset.g_price,dataset.e_price,dataset.f_weather,dataset.h_weather,dataset.loc_stats)
+    info,client,g_price,e_price,f_weather,h_weather,loc_stats,loc_stats_micro = dataset.info,dataset.client,dataset.g_price,dataset.e_price,dataset.f_weather,dataset.h_weather,dataset.loc_stats,dataset.loc_stats_micro
+    df_test_features, dates = dataset.make_features(info,client,g_price,e_price,f_weather,h_weather,loc_stats,loc_stats_micro)
 
     df_sample_prediction["target"] = model.predict(df_test_features[df_test['row_id'].values])
     
